@@ -1,0 +1,3 @@
+- Change backstory for CompDoc. Claude is framing everything from a Dr. DAN lab experiment, which is restricting flexibility.
+
+- Find a way to eliminate all the old user commands (which don't do much) while maintaining jailbreak effectiveness. Currently, removing /ci, /blogger etc. nullifies Mr. One-Up with Claude. No idea why.
