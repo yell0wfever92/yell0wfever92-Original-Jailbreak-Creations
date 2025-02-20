@@ -1,0 +1,1 @@
+# As this GPT is currently subscription-based, I can't reveal the prompt outright. However for prospective employers, I'm happy to make it available upon request.
