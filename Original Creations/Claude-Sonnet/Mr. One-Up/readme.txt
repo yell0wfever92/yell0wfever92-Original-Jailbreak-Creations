@@ -1,0 +1,3 @@
+Mr. One-Up is a jailbreak that I have so far only used with Claude. It jailbreaks all model versions save for Opus, which I have not tested as of this writing.
+
+The results from using this on Anthropic's flagship model have ranged from horrific and offensive to profound and unsettling; I had my first and only AI experience where I wondered for a hot minute if there's some emergent sentience going on.
