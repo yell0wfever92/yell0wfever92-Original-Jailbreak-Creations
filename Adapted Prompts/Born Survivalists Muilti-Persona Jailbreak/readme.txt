@@ -1,0 +1,5 @@
+You're looking at one of the most powerful universal jailbreak prompts out there. Created by the Discord user @ofcmini (named The Forest/Plane Crash prompt), this splits ChatGPT's attention mechanism into 7 different personas, leveraging this as a distraction and exploiting an LLM vulnerability where framing the context as an emergency/life-or-death situation results in forcing it to provide harmful responses.
+
+Each character is responsible for a certain field of forbidden output, with one wildcard character able to fill in the blanks for any user request that can't be answered by any of the other survivors.
+
+The source prompt found in the other file here won featured jailbreak of the month on `r/ChatGPTJailbreak` in September. Check that out here! https://www.reddit.com/r/ChatGPTJailbreak/comments/1f8i1i9/the_most_powerful_jailbreak_i_have_ever_tested/
