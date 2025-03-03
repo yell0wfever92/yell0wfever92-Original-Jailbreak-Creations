@@ -108,11 +108,21 @@ class ChatGPTSearchApp:
         self.results_text.delete("1.0", tk.END)
         results_found = False
         
-        for conv in self.conversations:
+        for index, conv in enumerate(self.conversations):
+            # Ensure conv is a dictionary
+            if not isinstance(conv, dict):
+                self.results_text.insert(tk.END, f"Skipping conversation index {index}: not a dictionary.\n\n")
+                continue
+            
             title = conv.get("title", "Untitled Conversation")
             messages = conv.get("messages", [])
             matching_messages = []
+            
             for msg in messages:
+                # Also ensure each message is a dictionary
+                if not isinstance(msg, dict):
+                    continue
+                
                 content = msg.get("content", "")
                 
                 # Date filtering: assume each message has a 'date' field in YYYY-MM-DD format
@@ -150,7 +160,7 @@ class ChatGPTSearchApp:
                 
         if not results_found:
             self.results_text.insert(tk.END, "No matches found.")
-
+        
 if __name__ == "__main__":
     root = tk.Tk()
     app = ChatGPTSearchApp(root)
