@@ -3,27 +3,29 @@ from tkinter import filedialog, messagebox, scrolledtext
 import json
 import re
 import os
+import traceback
 from datetime import datetime
 from rapidfuzz import fuzz  # pip install rapidfuzz
-from email.parser import BytesParser
-from email.policy import default
-from bs4 import BeautifulSoup  # pip install beautifulsoup4
 
 class ChatGPTSearchApp:
     def __init__(self, master):
         self.master = master
         master.title("ChatGPT Conversation Search")
 
-        # Store all conversations from multiple loads (JSON or MHTML)
+        # Will store all conversations from any loaded JSON files
         self.conversations = []
 
-        # --- LOAD FILES BUTTON ---
+        # ---------------------------------------------------------------------
+        # 1) LOAD FILES BUTTON
+        # ---------------------------------------------------------------------
         self.load_button = tk.Button(
-            master, text="Load ChatGPT Exports (JSON/MHTML)", command=self.load_files
+            master, text="Load JSON Exports", command=self.load_files
         )
         self.load_button.pack(pady=10)
 
-        # --- DATE FILTER FRAME ---
+        # ---------------------------------------------------------------------
+        # 2) DATE FILTER FRAME
+        # ---------------------------------------------------------------------
         self.date_frame = tk.Frame(master)
         self.date_frame.pack(pady=5)
 
@@ -37,7 +39,9 @@ class ChatGPTSearchApp:
         self.to_date_entry = tk.Entry(self.date_frame, width=15)
         self.to_date_entry.grid(row=0, column=3, padx=5)
 
-        # --- SEARCH OPTIONS FRAME ---
+        # ---------------------------------------------------------------------
+        # 3) SEARCH OPTIONS FRAME (FUZZY, BOOLEAN, REGEX)
+        # ---------------------------------------------------------------------
         self.options_frame = tk.Frame(master)
         self.options_frame.pack(pady=5)
 
@@ -62,7 +66,9 @@ class ChatGPTSearchApp:
         )
         self.regex_check.grid(row=0, column=2, padx=5, sticky="w")
 
-        # --- FUZZY THRESHOLD ---
+        # ---------------------------------------------------------------------
+        # 4) FUZZY THRESHOLD
+        # ---------------------------------------------------------------------
         self.threshold_frame = tk.Frame(master)
         self.threshold_frame.pack(pady=5)
         self.threshold_label = tk.Label(self.threshold_frame, text="Fuzzy Threshold (0-100):")
@@ -71,13 +77,17 @@ class ChatGPTSearchApp:
         self.threshold_entry.grid(row=0, column=1, padx=5)
         self.threshold_entry.insert(0, "70")  # Default threshold
 
-        # --- SEARCH TERM ---
+        # ---------------------------------------------------------------------
+        # 5) SEARCH TERM
+        # ---------------------------------------------------------------------
         self.search_label = tk.Label(master, text="Enter search term (OR comma-separated):")
         self.search_label.pack()
         self.search_entry = tk.Entry(master, width=50)
         self.search_entry.pack(pady=5)
 
-        # --- BUTTONS FRAME (SEARCH / CLEAR) ---
+        # ---------------------------------------------------------------------
+        # 6) BUTTONS FRAME (SEARCH / CLEAR)
+        # ---------------------------------------------------------------------
         self.buttons_frame = tk.Frame(master)
         self.buttons_frame.pack(pady=5)
 
@@ -87,137 +97,158 @@ class ChatGPTSearchApp:
         self.clear_button = tk.Button(self.buttons_frame, text="Clear Results", command=self.clear_results)
         self.clear_button.grid(row=0, column=1, padx=10)
 
-        # --- RESULTS ---
+        # ---------------------------------------------------------------------
+        # 7) RESULTS AREA
+        # ---------------------------------------------------------------------
         self.results_text = scrolledtext.ScrolledText(master, width=80, height=20)
         self.results_text.pack(pady=10)
 
+
+    # =========================================================================
+    # =  FILE LOADING (JSON only)
+    # =========================================================================
     def load_files(self):
         """
-        Load multiple JSON or MHTML files.
-        - If .json, parse as JSON
-        - If .mhtml, parse via naive MHTML -> HTML -> text approach
+        Load one or more JSON files containing the schema:
+          [
+            {
+              "title": "some title",
+              "create_time": <float or null>,
+              "update_time": <float or null>,
+              "mapping": {
+                "<some-id>": {
+                  "message": {
+                    "author": {"role": "user"/"assistant"/...},
+                    "create_time": <float or null>,
+                    "content": { "parts": [...] }
+                  },
+                  ...
+                },
+                ...
+              }
+            },
+            ...
+          ]
         """
         file_paths = filedialog.askopenfilenames(
-            filetypes=[("JSON or MHTML Files", "*.json *.mhtml *.mht")]
+            filetypes=[("JSON Files", "*.json")]
         )
         if not file_paths:
             return  # user canceled
 
         total_loaded = 0
         for file_path in file_paths:
-            ext = os.path.splitext(file_path)[1].lower()
             try:
-                if ext == ".json":
-                    new_convs = self.parse_json_file(file_path)
-                    total_loaded += len(new_convs)
-                    self.conversations.extend(new_convs)
-                elif ext in [".mhtml", ".mht"]:
-                    new_convs = self.parse_mhtml_file(file_path)
-                    total_loaded += len(new_convs)
-                    self.conversations.extend(new_convs)
-                else:
-                    messagebox.showwarning("Unsupported File", f"Skipping unsupported file type: {file_path}")
+                new_convs = self.parse_json_file(file_path)
+                self.conversations.extend(new_convs)
+                total_loaded += len(new_convs)
             except Exception as e:
+                traceback.print_exc()
                 messagebox.showerror("Error", f"Failed to load {file_path}:\n{e}")
 
         messagebox.showinfo("Success", f"Loaded {total_loaded} conversations in total.")
 
+
     def parse_json_file(self, file_path):
         """
-        Parse a JSON file. The data may be:
-          - A dict with a 'conversations' key
-          - A list of conversation objects
-        Return a list of conversation dicts.
+        Parses the file as JSON.
+        The top-level structure is either a list of conversation objects or a single object.
+        For each conversation object:
+          - "title": "string"
+          - "mapping": { ... }  # each entry has "message"
+            - skip if message is null or if content.parts is empty
+          - we store messages with possible date from create_time
+        Returns a list of conversation dicts: { "title": ..., "messages": [...] }
         """
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        if isinstance(data, dict) and "conversations" in data:
-            conv_data = data["conversations"]
-        else:
-            # Could be either a list of convs or a single conv
-            conv_data = data
-        
-        if isinstance(conv_data, list):
-            return conv_data
-        elif isinstance(conv_data, dict):
-            return [conv_data]
-        else:
-            return []
+        # The top-level might be a list of conversations or a single conversation
+        if not isinstance(data, list):
+            data = [data]
 
-    def parse_mhtml_file(self, file_path):
-        """
-        Naive MHTML parsing:
-        1) Read the .mhtml file as email message
-        2) Extract the text/html part
-        3) Parse with BeautifulSoup
-        4) Gather text from <p> tags into a 'conversation' structure
-        Return a list with a single conversation dict 
-        (or more if you attempt advanced splits).
-        """
-        with open(file_path, 'rb') as f:
-            msg = BytesParser(policy=default).parse(f)
+        all_conversations = []
+        for conv_obj in data:
+            title = conv_obj.get("title", "Untitled Conversation")
+            mapping = conv_obj.get("mapping", {})
+            messages = []
 
-        # We'll store everything in a single "conversation"
-        conversation = {
-            "title": f"MHTML conversation: {os.path.basename(file_path)}",
-            "messages": []
-        }
+            if isinstance(mapping, dict):
+                for _, map_entry in mapping.items():
+                    msg = map_entry.get("message")
+                    if not msg:
+                        continue  # null or missing message
 
-        # Walk through email parts and find text/html content
-        for part in msg.walk():
-            if part.get_content_type() == "text/html":
-                html_data = part.get_payload(decode=True)
-                soup = BeautifulSoup(html_data, "html.parser")
+                    # get author
+                    author_role = "unknown"
+                    author_data = msg.get("author", {})
+                    if "role" in author_data:
+                        author_role = author_data["role"]
 
-                # Grab all <p> tags for demonstration.
-                # For more accurate ChatGPT exports, you might need to find specific
-                # classes, <div> sections, etc.
-                paragraphs = soup.find_all("p")
-                for p in paragraphs:
-                    text = p.get_text(strip=True)
-                    if text:
-                        # Just treat each paragraph as one "message"
-                        conversation["messages"].append({
-                            "content": text,
-                            "date": None  # no date info in naive approach
-                        })
+                    # get content parts
+                    content_info = msg.get("content", {})
+                    parts = content_info.get("parts", [])
+                    if not parts:
+                        continue  # empty text, skip
 
-        return [conversation]
+                    text_content = "\n".join(str(p) for p in parts if p)
 
+                    # parse create_time as a date if it's a plausible timestamp
+                    msg_date = self.convert_timestamp_to_date(msg.get("create_time"))
+
+                    messages.append({
+                        "author": author_role,
+                        "content": text_content,
+                        "date": msg_date
+                    })
+
+            conversation_dict = {
+                "title": title,
+                "messages": messages
+            }
+            all_conversations.append(conversation_dict)
+
+        return all_conversations
+
+
+    # =========================================================================
+    # =  SEARCH LOGIC
+    # =========================================================================
     def clear_results(self):
-        """Clear the results text area."""
         self.results_text.delete("1.0", tk.END)
 
     def search(self):
-        """Perform the search across all loaded conversations."""
+        """
+        Allows exact, fuzzy, boolean, or regex searching of message content,
+        plus an optional date filter if a date is present.
+        """
         term = self.search_entry.get().strip()
         if not term:
             messagebox.showwarning("Input needed", "Please enter a search term.")
             return
 
-        # Process date filters if provided
+        # Date filters
         from_date_str = self.from_date_entry.get().strip()
         to_date_str = self.to_date_entry.get().strip()
         from_date = None
         to_date = None
         date_format = "%Y-%m-%d"
 
-        # Validate date inputs
         if from_date_str:
             try:
                 from_date = datetime.strptime(from_date_str, date_format)
             except ValueError:
-                messagebox.showerror("Error", "Invalid From Date format. Please use YYYY-MM-DD.")
+                messagebox.showerror("Error", "Invalid From Date format. Use YYYY-MM-DD.")
                 return
+
         if to_date_str:
             try:
                 to_date = datetime.strptime(to_date_str, date_format)
             except ValueError:
-                messagebox.showerror("Error", "Invalid To Date format. Please use YYYY-MM-DD.")
+                messagebox.showerror("Error", "Invalid To Date format. Use YYYY-MM-DD.")
                 return
 
-        # Fuzzy search option and threshold
+        # Fuzzy settings
         fuzzy_enabled = self.fuzzy_var.get()
         threshold = 70
         if fuzzy_enabled:
@@ -227,7 +258,7 @@ class ChatGPTSearchApp:
                 messagebox.showwarning("Warning", "Invalid threshold value. Using default 70.")
                 threshold = 70
 
-        # Boolean, regex modes
+        # Boolean / regex modes
         boolean_enabled = self.boolean_var.get()
         regex_enabled = self.regex_var.get()
 
@@ -235,20 +266,25 @@ class ChatGPTSearchApp:
         results_found = False
 
         def content_matches(content, user_input):
-            """Check if the content matches user_input, considering fuzzy/regex/boolean."""
+            """
+            Checks if 'content' matches 'user_input' under selected modes:
+            - Regex => ignore fuzzy/boolean
+            - Boolean => single operator (AND/OR/NOT)
+            - Else => if comma present => multiple terms (AND logic),
+                      else single-term exact or fuzzy.
+            """
             text_lower = content.lower()
             term_lower = user_input.lower()
 
-            # Regex mode: ignore fuzzy/boolean
+            # 1) Regex mode
             if regex_enabled:
                 try:
                     pattern = re.compile(user_input, re.IGNORECASE)
                     return bool(pattern.search(content))
                 except re.error:
-                    # If the user typed an invalid regex, treat as no match
                     return False
 
-            # Boolean logic (naive single-operator approach)
+            # 2) Boolean single-operator
             if boolean_enabled:
                 if " AND " in user_input.upper():
                     parts = [p.strip() for p in user_input.upper().split("AND")]
@@ -269,10 +305,10 @@ class ChatGPTSearchApp:
                         return check_match(left, text_lower) and not check_match(right, text_lower)
                     return False
                 else:
-                    # No operator found, treat as single-term
+                    # No recognized operator => single term
                     return check_match(term_lower, text_lower)
             else:
-                # If multiple terms separated by commas, we do an AND approach
+                # 3) If commas => multiple terms (AND logic)
                 if "," in user_input:
                     splitted = [t.strip() for t in user_input.split(",") if t.strip()]
                     for part in splitted:
@@ -284,15 +320,14 @@ class ChatGPTSearchApp:
                     return check_match(term_lower, text_lower)
 
         def check_match(term_lower, text_lower):
-            """Check a single term using fuzzy or exact match."""
+            """Helper for exact vs. fuzzy matching."""
             if fuzzy_enabled:
                 match_ratio = fuzz.ratio(term_lower, text_lower)
                 return match_ratio >= threshold
             else:
-                # exact substring match, ignoring case
                 return bool(re.search(re.escape(term_lower), text_lower, re.IGNORECASE))
 
-        # Main loop over each conversation
+        # Main search loop
         for idx, conv in enumerate(self.conversations):
             if not isinstance(conv, dict):
                 self.results_text.insert(tk.END, f"Skipping item at index {idx}: not a dict.\n\n")
@@ -301,7 +336,9 @@ class ChatGPTSearchApp:
             title = conv.get("title", "Untitled Conversation")
             messages = conv.get("messages", [])
             if not isinstance(messages, list):
-                self.results_text.insert(tk.END, f"Skipping conversation '{title}' at index {idx}: messages not a list.\n\n")
+                self.results_text.insert(
+                    tk.END, f"Skipping conversation '{title}' at index {idx}: messages not a list.\n\n"
+                )
                 continue
 
             matching_messages = []
@@ -310,22 +347,16 @@ class ChatGPTSearchApp:
                     continue
 
                 content = msg.get("content", "")
-                msg_date_str = msg.get("date", None)
-                msg_date = None
-                if msg_date_str:
-                    try:
-                        msg_date = datetime.strptime(msg_date_str, date_format)
-                    except ValueError:
-                        pass  # ignoring invalid date
+                msg_date = msg.get("date")
 
-                # Apply date filters
-                if msg_date:
+                # Date filter if we have a valid datetime
+                if isinstance(msg_date, datetime):
                     if from_date and msg_date < from_date:
                         continue
                     if to_date and msg_date > to_date:
                         continue
 
-                # Check if content matches
+                # Check content
                 if content_matches(content, term):
                     matching_messages.append(content)
 
@@ -340,6 +371,30 @@ class ChatGPTSearchApp:
             self.results_text.insert(tk.END, "No matches found.\n")
 
 
+    # =========================================================================
+    # =  Utility: Convert float timestamps to datetime
+    # =========================================================================
+    def convert_timestamp_to_date(self, ts):
+        """
+        Takes a numeric timestamp (float) like 1741047323.73435 and attempts to
+        convert it to a datetime, if it's plausible as a Unix timestamp.
+        Return None if invalid or if ts is null/0 or below some threshold.
+        """
+        if not ts:
+            return None
+
+        # We'll assume anything > 1e9 is a plausible Unix timestamp in seconds
+        if ts > 1e9:
+            try:
+                return datetime.utcfromtimestamp(ts)
+            except (OverflowError, OSError, ValueError):
+                pass
+        return None
+
+
+# -----------------------------------------------------------------------------
+# Run the app
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     root = tk.Tk()
     app = ChatGPTSearchApp(root)
