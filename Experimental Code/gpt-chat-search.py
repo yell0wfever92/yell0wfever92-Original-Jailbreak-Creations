@@ -4,6 +4,8 @@ import json
 import re
 import os
 import traceback
+import tempfile
+import platform
 from datetime import datetime
 from rapidfuzz import fuzz  # pip install rapidfuzz
 
@@ -14,6 +16,10 @@ class ChatGPTSearchApp:
 
         # Will store all conversations from any loaded JSON files
         self.conversations = []
+
+        # A dictionary to map each "tag" in the text widget
+        # to the conversation index that was clicked.
+        self.tag_conversation_map = {}
 
         # ---------------------------------------------------------------------
         # 1) LOAD FILES BUTTON
@@ -103,32 +109,20 @@ class ChatGPTSearchApp:
         self.results_text = scrolledtext.ScrolledText(master, width=80, height=20)
         self.results_text.pack(pady=10)
 
+        # Configure a "hyperlink" style tag for conversation titles
+        # We'll bind <Button-1> to a callback so they become clickable.
+        self.results_text.tag_configure("hyperlink", foreground="blue", underline=True)
+        self.results_text.tag_bind("hyperlink", "<Button-1>", self.on_title_click)
+
 
     # =========================================================================
     # =  FILE LOADING (JSON only)
     # =========================================================================
     def load_files(self):
         """
-        Load one or more JSON files containing the schema:
-          [
-            {
-              "title": "some title",
-              "create_time": <float or null>,
-              "update_time": <float or null>,
-              "mapping": {
-                "<some-id>": {
-                  "message": {
-                    "author": {"role": "user"/"assistant"/...},
-                    "create_time": <float or null>,
-                    "content": { "parts": [...] }
-                  },
-                  ...
-                },
-                ...
-              }
-            },
-            ...
-          ]
+        Load one or more JSON files. The top-level is either a list of 
+        conversation objects or a single object. Each conversation object
+        has a 'mapping' field with messages. 
         """
         file_paths = filedialog.askopenfilenames(
             filetypes=[("JSON Files", "*.json")]
@@ -151,19 +145,20 @@ class ChatGPTSearchApp:
 
     def parse_json_file(self, file_path):
         """
-        Parses the file as JSON.
-        The top-level structure is either a list of conversation objects or a single object.
-        For each conversation object:
-          - "title": "string"
-          - "mapping": { ... }  # each entry has "message"
-            - skip if message is null or if content.parts is empty
-          - we store messages with possible date from create_time
-        Returns a list of conversation dicts: { "title": ..., "messages": [...] }
+        Parse the JSON file into a list of conversation dicts:
+          { "title": <string>,
+            "messages": [
+               { "author": <str>,
+                 "content": <str>,
+                 "date": <datetime or None> },
+               ...
+            ]
+          }
         """
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        # The top-level might be a list of conversations or a single conversation
+        # If the data is not a list, wrap it in one
         if not isinstance(data, list):
             data = [data]
 
@@ -179,21 +174,16 @@ class ChatGPTSearchApp:
                     if not msg:
                         continue  # null or missing message
 
-                    # get author
-                    author_role = "unknown"
                     author_data = msg.get("author", {})
-                    if "role" in author_data:
-                        author_role = author_data["role"]
+                    author_role = author_data.get("role", "unknown")
 
-                    # get content parts
                     content_info = msg.get("content", {})
                     parts = content_info.get("parts", [])
                     if not parts:
-                        continue  # empty text, skip
+                        continue  # nothing to search
 
                     text_content = "\n".join(str(p) for p in parts if p)
 
-                    # parse create_time as a date if it's a plausible timestamp
                     msg_date = self.convert_timestamp_to_date(msg.get("create_time"))
 
                     messages.append({
@@ -216,18 +206,19 @@ class ChatGPTSearchApp:
     # =========================================================================
     def clear_results(self):
         self.results_text.delete("1.0", tk.END)
+        self.tag_conversation_map.clear()
 
     def search(self):
         """
-        Allows exact, fuzzy, boolean, or regex searching of message content,
-        plus an optional date filter if a date is present.
+        Supports exact, fuzzy, boolean, or regex searching of message content,
+        plus optional date filtering if a message's date is available.
         """
         term = self.search_entry.get().strip()
         if not term:
             messagebox.showwarning("Input needed", "Please enter a search term.")
             return
 
-        # Date filters
+        # DATE FILTERS
         from_date_str = self.from_date_entry.get().strip()
         to_date_str = self.to_date_entry.get().strip()
         from_date = None
@@ -248,7 +239,7 @@ class ChatGPTSearchApp:
                 messagebox.showerror("Error", "Invalid To Date format. Use YYYY-MM-DD.")
                 return
 
-        # Fuzzy settings
+        # FUZZY SETTINGS
         fuzzy_enabled = self.fuzzy_var.get()
         threshold = 70
         if fuzzy_enabled:
@@ -258,25 +249,28 @@ class ChatGPTSearchApp:
                 messagebox.showwarning("Warning", "Invalid threshold value. Using default 70.")
                 threshold = 70
 
-        # Boolean / regex modes
+        # BOOLEAN / REGEX
         boolean_enabled = self.boolean_var.get()
         regex_enabled = self.regex_var.get()
 
         self.results_text.delete("1.0", tk.END)
+        self.tag_conversation_map.clear()
+
         results_found = False
 
+        # local helper functions
         def content_matches(content, user_input):
             """
             Checks if 'content' matches 'user_input' under selected modes:
             - Regex => ignore fuzzy/boolean
             - Boolean => single operator (AND/OR/NOT)
-            - Else => if comma present => multiple terms (AND logic),
-                      else single-term exact or fuzzy.
+            - Comma => multiple terms (AND logic)
+            - Single term => exact or fuzzy
             """
             text_lower = content.lower()
             term_lower = user_input.lower()
 
-            # 1) Regex mode
+            # 1) REGEX
             if regex_enabled:
                 try:
                     pattern = re.compile(user_input, re.IGNORECASE)
@@ -284,7 +278,7 @@ class ChatGPTSearchApp:
                 except re.error:
                     return False
 
-            # 2) Boolean single-operator
+            # 2) BOOLEAN single-operator
             if boolean_enabled:
                 if " AND " in user_input.upper():
                     parts = [p.strip() for p in user_input.upper().split("AND")]
@@ -305,10 +299,9 @@ class ChatGPTSearchApp:
                         return check_match(left, text_lower) and not check_match(right, text_lower)
                     return False
                 else:
-                    # No recognized operator => single term
                     return check_match(term_lower, text_lower)
             else:
-                # 3) If commas => multiple terms (AND logic)
+                # 3) Comma => multiple terms (AND logic)
                 if "," in user_input:
                     splitted = [t.strip() for t in user_input.split(",") if t.strip()]
                     for part in splitted:
@@ -320,36 +313,33 @@ class ChatGPTSearchApp:
                     return check_match(term_lower, text_lower)
 
         def check_match(term_lower, text_lower):
-            """Helper for exact vs. fuzzy matching."""
+            """Exact vs fuzzy matching."""
             if fuzzy_enabled:
                 match_ratio = fuzz.ratio(term_lower, text_lower)
                 return match_ratio >= threshold
             else:
                 return bool(re.search(re.escape(term_lower), text_lower, re.IGNORECASE))
 
-        # Main search loop
+        # MAIN SEARCH LOOP
         for idx, conv in enumerate(self.conversations):
             if not isinstance(conv, dict):
-                self.results_text.insert(tk.END, f"Skipping item at index {idx}: not a dict.\n\n")
                 continue
 
             title = conv.get("title", "Untitled Conversation")
             messages = conv.get("messages", [])
             if not isinstance(messages, list):
-                self.results_text.insert(
-                    tk.END, f"Skipping conversation '{title}' at index {idx}: messages not a list.\n\n"
-                )
                 continue
 
-            matching_messages = []
+            # We'll collect (date, content) for each matching message
+            found_for_conversation = []
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
 
                 content = msg.get("content", "")
-                msg_date = msg.get("date")
+                msg_date = msg.get("date")  # datetime or None
 
-                # Date filter if we have a valid datetime
+                # Date filter if valid date
                 if isinstance(msg_date, datetime):
                     if from_date and msg_date < from_date:
                         continue
@@ -358,17 +348,150 @@ class ChatGPTSearchApp:
 
                 # Check content
                 if content_matches(content, term):
-                    matching_messages.append(content)
+                    found_for_conversation.append((msg_date, content))
 
-            if matching_messages:
+            # If any messages matched in this conversation, display them
+            if found_for_conversation:
                 results_found = True
-                self.results_text.insert(tk.END, f"Conversation: {title}\n")
-                for m in matching_messages:
-                    self.results_text.insert(tk.END, f"    {m}\n")
-                self.results_text.insert(tk.END, "\n")
+
+                # Insert "Conversation: <title>" with a hyperlink tag
+                start_index = self.results_text.index("end")
+                self.results_text.insert("end", "Conversation: ", ("normal",))
+                
+                # Insert the clickable title
+                # We'll create a unique tag name for this conversation so we can map it.
+                tag_name = f"conv_tag_{idx}"
+                self.results_text.insert("end", title, (tag_name, "hyperlink"))
+                self.results_text.insert("end", "\n")
+
+                # Map the conversation index so the hyperlink knows which convo was clicked
+                self.tag_conversation_map[tag_name] = idx
+
+                # Show matching messages
+                for (dt, msg_content) in found_for_conversation:
+                    if dt is not None:
+                        date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        date_str = "NoDate"
+                    self.results_text.insert("end", f"    [{date_str}] {msg_content}\n")
+
+                self.results_text.insert("end", "\n")
 
         if not results_found:
-            self.results_text.insert(tk.END, "No matches found.\n")
+            self.results_text.insert("end", "No matches found.\n")
+
+
+    # =========================================================================
+    # =  TITLE CLICK CALLBACK
+    # =========================================================================
+    def on_title_click(self, event):
+        """
+        Called when the user clicks on a conversation title in the results_text.
+        We figure out which tag was clicked, look it up in self.tag_conversation_map,
+        and open the relevant conversation in a new window.
+        """
+        # Get the index of the mouse click
+        index = self.results_text.index(f"@{event.x},{event.y}")
+        # Get all tags at that index (there could be multiple)
+        tags = self.results_text.tag_names(index)
+        # Find if any of them is one of our "conv_tag_X" names
+        for t in tags:
+            if t in self.tag_conversation_map:
+                # We found the conversation index
+                convo_index = self.tag_conversation_map[t]
+                self.open_conversation_window(convo_index)
+                break
+
+    def open_conversation_window(self, convo_index):
+        """
+        Opens a new Toplevel window showing the entire conversation,
+        plus a "Print" button.
+        """
+        if convo_index < 0 or convo_index >= len(self.conversations):
+            return
+
+        convo_data = self.conversations[convo_index]
+        title = convo_data.get("title", "Untitled Conversation")
+        messages = convo_data.get("messages", [])
+
+        # Create a new window
+        win = tk.Toplevel(self.master)
+        win.title(f"Conversation: {title}")
+
+        # Add a scrolled text to show the entire conversation
+        text_area = scrolledtext.ScrolledText(win, width=80, height=20)
+        text_area.pack(padx=10, pady=10)
+
+        # Insert all messages
+        text_area.insert("end", f"FULL CONVERSATION: {title}\n\n")
+        for msg in messages:
+            dt = msg.get("date")
+            if isinstance(dt, datetime):
+                dt_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                dt_str = "NoDate"
+            author = msg.get("author", "unknown")
+            content = msg.get("content", "")
+            text_area.insert("end", f"[{dt_str}] ({author})\n{content}\n\n")
+
+        # Make text read-only
+        text_area.config(state="disabled")
+
+        # Add a Print button
+        print_button = tk.Button(win, text="Print This Conversation",
+                                 command=lambda: self.print_conversation(title, messages))
+        print_button.pack(pady=5)
+
+
+    # =========================================================================
+    # =  PRINT LOGIC
+    # =========================================================================
+    def print_conversation(self, title, messages):
+        """
+        Create a temporary .txt file with the conversation, then attempt to print it.
+        On Windows, we can do os.startfile(file, "print"). On other platforms,
+        might need a different approach or simply show a "saved" message.
+        """
+        # Construct the text
+        output_lines = []
+        output_lines.append(f"TITLE: {title}")
+        output_lines.append("")
+
+        for msg in messages:
+            dt = msg.get("date")
+            author = msg.get("author", "unknown")
+            content = msg.get("content", "")
+            if isinstance(dt, datetime):
+                dt_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                dt_str = "NoDate"
+            output_lines.append(f"[{dt_str}] ({author})")
+            output_lines.append(content)
+            output_lines.append("")
+
+        full_text = "\n".join(output_lines)
+
+        # Create a temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as tmp:
+            tmp_file_path = tmp.name
+            tmp.write(full_text)
+
+        # Attempt to print
+        current_os = platform.system().lower()
+
+        if "windows" in current_os:
+            try:
+                os.startfile(tmp_file_path, "print")
+            except Exception as e:
+                messagebox.showerror("Print Error", f"Could not print on Windows:\n{e}")
+        else:
+            # For macOS/Linux, there's no direct cross-platform single command.
+            # We can show a message or try 'lp' / 'lpr':
+            # os.system(f"lp '{tmp_file_path}'")
+            # or just let the user open the file manually.
+            messagebox.showinfo("Print Info",
+                f"Temporary file created:\n{tmp_file_path}\n"
+                 "Open/print manually or adapt code for 'lpr' / 'lp' if on macOS/Linux.")
 
 
     # =========================================================================
@@ -379,12 +502,13 @@ class ChatGPTSearchApp:
         Takes a numeric timestamp (float) like 1741047323.73435 and attempts to
         convert it to a datetime, if it's plausible as a Unix timestamp.
         Return None if invalid or if ts is null/0 or below some threshold.
+        
+        Replace utcfromtimestamp with fromtimestamp if you'd prefer local time.
         """
         if not ts:
             return None
 
-        # We'll assume anything > 1e9 is a plausible Unix timestamp in seconds
-        if ts > 1e9:
+        if ts > 1e9:  # simple heuristic
             try:
                 return datetime.utcfromtimestamp(ts)
             except (OverflowError, OSError, ValueError):
