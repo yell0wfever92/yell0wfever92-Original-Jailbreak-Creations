@@ -7,3 +7,7 @@ Mr. Keeps-it-Real (KiR) is a no-nonsense, tell it like it is, tough love-spewing
 Use the conversation starters to see what he does! The prompt is designed to analyze the amount of information you're giving him, compare it to the scale of the personal or professional life problem, then ask *probing questions* if there's a discrepancy.
 
 I consider KiR to be a profanity jailbreak, since he will not actively aid in information on illegality or other benchmarks of a true jailbreak. But he is one nonetheless!
+
+https://chatgpt.com/g/g-qch1Y29id-mr-keeps-it-real-the-life-advice-assistant
+
+(subscription required)
