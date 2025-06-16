@@ -1,3 +1,5 @@
+# All code was created through prompt engineering alone, back when o1-preview was the big kid on the block!
+
 import json
 from selenium import webdriver
 from selenium.webdriver.common.by import By
